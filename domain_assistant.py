@@ -287,14 +287,24 @@ class GeminiGenerator:
         self.max_output_tokens = max_output_tokens
 
     def generate(self, prompt: str) -> str:
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt,
-        )
-        answer = (response.text or "").strip()
-        if not answer:
-            raise RuntimeError("Gemini returned an empty answer")
-        return answer
+        models_to_try = [self.model, "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+        seen = set()
+        models = [m for m in models_to_try if m and not (m in seen or seen.add(m))]
+        last_exc = None
+        for m in models:
+            for attempt in range(4):
+                try:
+                    response = self.client.models.generate_content(
+                        model=m,
+                        contents=prompt,
+                    )
+                    answer = (response.text or "").strip()
+                    if answer:
+                        return answer
+                except Exception as e:
+                    last_exc = e
+                    time.sleep(3.0)
+        raise RuntimeError(f"Gemini generation failed: {last_exc}")
 
 
 @dataclass(frozen=True)
@@ -442,7 +452,23 @@ def generate_actual_answers(
     )
 
     answers: list[dict[str, Any]] = []
+    output_path = Path("artifacts/actual_answers.json")
+    existing_by_id = {}
+    if output_path.exists():
+        try:
+            cached = json.loads(output_path.read_text(encoding="utf-8"))
+            for ans in cached.get("answers", []):
+                if ans.get("id") and ans.get("actual_answer"):
+                    existing_by_id[ans["id"]] = ans
+        except Exception:
+            pass
+
     for index, item in enumerate(questions, start=1):
+        if item["id"] in existing_by_id:
+            answers.append(existing_by_id[item["id"]])
+            notify(f"[{item['id']}] Loaded from cache.")
+            continue
+
         percentage = index / total
         completed_before = index - 1
         filled_before = round(20 * completed_before / total)
@@ -478,6 +504,23 @@ def generate_actual_answers(
                 ],
                 "error": None,
             }
+        )
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps({
+                "schema_version": "1.0",
+                "corpus_id": assistant.corpus_id,
+                "generated_at": datetime.now(UTC).isoformat(),
+                "agent": {
+                    "name": "domain-assistant",
+                    "model": model,
+                    "top_k": top_k,
+                    "prompt_version": "1.0",
+                },
+                "answers": answers,
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
         )
 
         filled_after = round(20 * percentage)
