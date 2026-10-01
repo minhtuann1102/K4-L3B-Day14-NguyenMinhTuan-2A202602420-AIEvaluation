@@ -250,19 +250,50 @@ class OpenAIGenerator:
             raise RuntimeError("OPENAI_API_KEY is missing from .env")
         if not self.model:
             raise RuntimeError("OPENAI_MODEL is missing from .env")
-        self.client = OpenAI(api_key=api_key)
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.max_output_tokens = max_output_tokens
 
     def generate(self, prompt: str) -> str:
-        response = self.client.responses.create(
-            model=self.model,
-            input=prompt,
-            temperature=0,
-            max_output_tokens=self.max_output_tokens,
-        )
-        answer = response.output_text.strip()
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                input=prompt,
+                temperature=0,
+                max_output_tokens=self.max_output_tokens,
+            )
+            answer = response.output_text.strip()
+        except Exception:
+            chat_resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=self.max_output_tokens,
+            )
+            answer = (chat_resp.choices[0].message.content or "").strip()
         if not answer:
-            raise RuntimeError("OpenAI returned an empty answer")
+            raise RuntimeError("Generator returned an empty answer")
+        return answer
+
+
+class GeminiGenerator:
+    def __init__(self, max_output_tokens: int = 300) -> None:
+        api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+        self.model = (os.getenv("GEMINI_MODEL") or os.getenv("OPENAI_MODEL") or "gemini-2.5-flash").strip()
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is missing from .env")
+        from google import genai
+        self.client = genai.Client(api_key=api_key)
+        self.max_output_tokens = max_output_tokens
+
+    def generate(self, prompt: str) -> str:
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+        )
+        answer = (response.text or "").strip()
+        if not answer:
+            raise RuntimeError("Gemini returned an empty answer")
         return answer
 
 
@@ -296,10 +327,15 @@ class DomainAssistant:
         top_k: int = 5,
     ) -> DomainAssistant:
         corpus_id, chunks = load_corpus(corpus_dir)
+        if generator is None:
+            if os.getenv("GEMINI_API_KEY") or (os.getenv("OPENAI_API_KEY") or "").startswith("AIzaSy"):
+                generator = GeminiGenerator()
+            else:
+                generator = OpenAIGenerator()
         return cls(
             corpus_id,
             BM25Retriever(chunks),
-            generator if generator is not None else OpenAIGenerator(),
+            generator,
             top_k,
         )
 
@@ -508,7 +544,7 @@ def main() -> int:
             json.dumps(artifact, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-    except (OSError, OpenAIError, TypeError, ValueError, RuntimeError) as exc:
+    except Exception as exc:
         print(f"ERROR: {exc}")
         return 2
     print(f"Generated {len(artifact['answers'])} actual answers: {output}")

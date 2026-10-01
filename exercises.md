@@ -30,11 +30,11 @@ critical.
 
 | Metric | Acceptable Low Score Scenario | Critical Low Score Scenario | Action Required |
 |---|---|---|---|
-| Faithfulness | | | |
-| Answer Relevance | | | |
-| Context Recall | | | |
-| Context Precision | | | |
-| Completeness | | | |
+| Faithfulness |Khi bot chào hỏi xã giao hoặc thêm câu chúc khách hàng (những câu này hiển nhiên không có trong tài liệu đối chiếu). |Bot tự bịa chính sách đổi trả, bịa thời hạn bảo hành hoặc báo sai thông số kỹ thuật sản phẩm. |Khóa prompt bằng câu lệnh nghiêm ngặt "chỉ trả lời dựa trên context được cấp", hạ temperature về 0. |
+| Answer Relevance |Khách hỏi trêu, hỏi ngoài lề và bot từ chối trả lời lịch sự (refusal đúng yêu cầu). |Khách hỏi về phí ship hay địa chỉ shop nhưng bot lại đi giải thích chính sách bảo hành. |Chỉnh lại prompt hướng dẫn bám sát câu hỏi, thêm bước phân loại ý định (intent classification). |
+| Context Recall |Câu hỏi chỉ cần đúng 1 ý nhỏ là đủ kết luận (như kiểm tra xem shop có mở cửa Chủ Nhật không). |Khách hỏi điều kiện bảo hành pin nhưng hệ thống retrieve thiếu mất tài liệu chính sách pin. |Tăng số chunk lấy về (top_k), tăng kích thước chunk size và overlap để không bị đứt đoạn thông tin. |
+| Context Precision |Lấy về nhiều đoạn văn bản, đoạn chứa đáp án đúng nằm ở vị trí thứ 2 hoặc 3 thay vì đứng đầu. |Mấy đoạn rác/nhiễu bị xếp lên top 1 khiến bot đọc nhầm và hiểu sai ngữ cảnh của khách. |Thêm bước Rerank (xếp hạng lại) để kéo đoạn thông tin liên quan nhất lên đầu. |
+| Completeness |	Khách chỉ cần câu trả lời nhanh dạng xác nhận Có/Không, không cần lôi hết quy định ra đọc. |Khách hỏi các bước gửi hàng bảo hành mà bot chỉ chỉ được bước 1 rồi ngưng, thiếu mất 3 bước sau. |Thêm ví dụ mẫu (few-shot) trong prompt, yêu cầu bot trả lời dạng gạch đầu dòng để không bị sót ý. |
 
 ### Exercise 1.2 — Bias trong LLM-as-a-Judge
 
@@ -46,15 +46,21 @@ Ba bias thường gặp:
 
 **Câu 1: Thiết kế experiment phát hiện position bias với ít nhất hai conditions.**
 
-> *Câu trả lời:*
+> *Câu trả lời:* 
+Mình sẽ chuẩn bị 1 tập câu hỏi và 2 câu trả lời A, B.
+
+Lần 1: Cho LLM chấm theo thứ tự A trước, B sau.
+Lần 2: Giữ nguyên văn bản nhưng đảo thứ tự lại thành B trước, A sau.
+Nếu ở cả 2 lần, câu nào đứng ở vị trí đầu tiên cũng đều được chấm điểm cao hơn rõ rệt (dù nội dung không đổi), thì chắc chắn judge đang bị Position bias. Khi đó giải pháp là chạy cả 2 chiều rồi lấy điểm trung bình.
 
 **Câu 2: Làm thế nào giảm verbosity bias bằng rubric design?**
 
-> *Câu trả lời:*
+> *Câu trả lời:* 
+Thêm hẳn tiêu chí "ngắn gọn, súc tích" vào barem điểm. Trong rubric ghi rõ: chỉ cho điểm tối đa nếu trả lời đúng trọng tâm và không thừa thãi. Nếu câu trả lời dài dòng, lặp ý hoặc chém gió lan man thì trừ bớt 1–2 điểm.
 
 **Câu 3: Tại sao cần calibrate LLM judge với human labels?**
 
-> *Câu trả lời:*
+> *Câu trả lời:* Vì LLM judge rất hay bị bias ngầm (như model OpenAI thường có xu hướng chấm điểm cao cho văn phong của chính OpenAI, hoặc model hay chấm nới tay). Cần so sánh điểm của LLM với điểm do người thật chấm để biết mức độ tin cậy được bao nhiêu %, từ đó mới dám giao cho nó tự động duyệt code/prompt.
 
 ### Exercise 1.3 — Evaluation trong CI/CD
 
@@ -62,13 +68,16 @@ Ba bias thường gặp:
 
 | Metric | Threshold | Lý do |
 |---|---:|---|
-| Faithfulness | | |
-| Answer Relevance | | |
-| Completeness | | |
+| Faithfulness |0.80 |	Làm bot chăm sóc khách hàng mà trả lời bịa đặt là toang ngay, rất dễ bị khách khiếu nại nên tiêu chí này phải siết chặt nhất. |
+| Answer Relevance |0.75 |	Đảm bảo bot hiểu đúng và trả lời trúng câu hỏi của khách, tránh tình trạng "hỏi một đằng trả lời một nẻo". |
+| Completeness |0.70 | Cần đủ ý chính cho khách hiểu, nhưng vẫn châm chước được vì khách thường sẽ nhắn hỏi thêm nếu chưa rõ.|
 
 **Câu 2: Khi nào dùng offline evaluation, online evaluation và human review?**
 
 > *Câu trả lời:*
+Offline eval: Chạy tự động trong CI/CD trước khi deploy. Mỗi lần dev sửa prompt hoặc đổi code retriever thì chạy qua tập test 20 câu để xem điểm có bị tụt không.
+Online eval: Chạy khi bot đã lên live thực tế. Theo dõi xem khách có bấm nút dislike (thumbs-down) không, hay có bao nhiêu người bực mình đòi gặp nhân viên hỗ trợ trực tiếp.
+Human review: Định kỳ hàng tuần hoặc khi thấy có ca khách đánh giá 1 sao, người thật sẽ mở log ra đọc lại toàn bộ hội thoại để tìm nguyên nhân gốc rễ và bổ sung ca lỗi đó vào tập test dataset.
 
 ---
 
